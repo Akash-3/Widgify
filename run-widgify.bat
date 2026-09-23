@@ -17,7 +17,7 @@ REM ============================================================
 set "PROJECT_DIR=%~dp0"
 set "RUNTIME_DIR=%PROJECT_DIR%.widgify"
 
-set "MYSQL_VERSION=8.0.37"
+set "MYSQL_VERSION=8.0.46"
 set "MYSQL_DIR=%RUNTIME_DIR%\mysql"
 set "MYSQL_DATA=%MYSQL_DIR%\data"
 set "MYSQL_BIN=%MYSQL_DIR%\bin"
@@ -32,6 +32,10 @@ set "MYSQL_PASSWORD="
 set "TOMCAT_VERSION=10.1.20"
 set "TOMCAT_DIR=%RUNTIME_DIR%\tomcat"
 
+set "JDK_VERSION=17.0.20.1"
+set "JDK_DIR=%RUNTIME_DIR%\jdk"
+set "JDK_ZIP=%RUNTIME_DIR%\jdk.zip"
+
 set "TOMCAT_PORT=8080"
 set "TOMCAT_WEBAPPS=%TOMCAT_DIR%\webapps"
 
@@ -40,6 +44,14 @@ set "TOMCAT_WAR=%TOMCAT_WEBAPPS%\widgify.war"
 set "TOMCAT_APP=%TOMCAT_WEBAPPS%\widgify"
 
 cd /d "%PROJECT_DIR%"
+
+if /i "%~1"=="--check" goto CHECK_ONLY
+
+if not exist "%PROJECT_DIR%database\schema.sql" (
+    echo ERROR: database\schema.sql was not found.
+    echo Run this launcher from the complete Widgify project folder.
+    exit /b 1
+)
 
 REM ============================================================
 REM CREATE LOCAL RUNTIME DIRECTORY
@@ -55,14 +67,133 @@ REM ============================================================
 
 echo [1/8] Checking Java...
 
+set "JAVA_HOME="
+
+if exist "%JDK_DIR%\bin\java.exe" (
+    set "JAVA_HOME=%JDK_DIR%"
+)
+
+if not defined JAVA_HOME (
+    for /d %%D in (
+        "C:\Program Files\Java\*"
+        "C:\Program Files\Eclipse Adoptium\*"
+        "C:\Program Files\Microsoft\*"
+        "C:\Program Files\Android\Android Studio\jbr"
+    ) do (
+        if exist "%%~D\bin\java.exe" (
+            set "JAVA_HOME=%%~D"
+            goto JAVA_HOME_FOUND
+        )
+    )
+)
+
+:JAVA_HOME_FOUND
+
+if defined JAVA_HOME (
+    set "PATH=%JAVA_HOME%\bin;%PATH%"
+)
+
 where java >nul 2>&1
 
 if errorlevel 1 (
+    echo Java was not found in PATH or common install folders.
+    echo Downloading a portable JDK %JDK_VERSION% for Widgify...
+
+    where powershell >nul 2>&1
+    if errorlevel 1 (
+        echo.
+        echo ERROR: Windows PowerShell was not found.
+        echo Widgify uses PowerShell to extract the bundled JDK.
+        echo.
+        pause
+        exit /b 1
+    )
+
+    where curl.exe >nul 2>&1
+    if errorlevel 1 (
+        echo.
+        echo ERROR: curl.exe was not found.
+        echo Widgify needs curl.exe to download the JDK automatically.
+        echo.
+        pause
+        exit /b 1
+    )
+
+    if exist "%JDK_DIR%" (
+        rmdir /s /q "%JDK_DIR%"
+    )
+    if exist "%JDK_ZIP%" (
+        del /f /q "%JDK_ZIP%" >nul 2>&1
+    )
+
+    curl.exe --fail --location --retry 3 --retry-delay 2 --output "%JDK_ZIP%" ^
+        "https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.20%2B101/OpenJDK17U-jdk_x64_windows_hotspot_17.0.20_101.zip"
+
+    if errorlevel 1 (
+        echo.
+        echo ERROR: JDK download failed.
+        echo Widgify could not download a Java runtime automatically.
+        echo.
+        pause
+        exit /b 1
+    )
+
+    if not exist "%JDK_ZIP%" (
+        echo.
+        echo ERROR: JDK archive was not created.
+        echo.
+        pause
+        exit /b 1
+    )
+
+    if exist "%RUNTIME_DIR%\jdk_extract" (
+        rmdir /s /q "%RUNTIME_DIR%\jdk_extract"
+    )
+
+    powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+        "try { Expand-Archive -Path '%JDK_ZIP%' -DestinationPath '%RUNTIME_DIR%\jdk_extract' -Force -ErrorAction Stop } catch { exit 1 }"
+
+    if errorlevel 1 (
+        echo.
+        echo ERROR: JDK extraction failed.
+        echo.
+        pause
+        exit /b 1
+    )
+
+    set "JAVA_HOME="
+    for /d %%D in ("%RUNTIME_DIR%\jdk_extract\*") do (
+        if exist "%%~D\bin\java.exe" (
+            set "JAVA_HOME=%%~D"
+            goto JDK_READY
+        )
+    )
+
+    :JDK_READY
+    if not defined JAVA_HOME (
+        echo.
+        echo ERROR: JDK installation is incomplete.
+        echo.
+        pause
+        exit /b 1
+    )
+
+    if exist "%JDK_DIR%" (
+        rmdir /s /q "%JDK_DIR%"
+    )
+    move /y "%JAVA_HOME%" "%JDK_DIR%" >nul
+    set "JAVA_HOME=%JDK_DIR%"
+    set "PATH=%JAVA_HOME%\bin;%PATH%"
+    del /f /q "%JDK_ZIP%" >nul 2>&1
+    rmdir /s /q "%RUNTIME_DIR%\jdk_extract"
+)
+
+where powershell >nul 2>&1
+
+if errorlevel 1 (
     echo.
-    echo ERROR: Java was not found.
-    echo.
-    echo Widgify requires JDK 17 or newer.
-    echo Please install a JDK and make sure JAVA_HOME is configured.
+    echo ERROR: Windows PowerShell was not found.
+    echo Widgify uses PowerShell to download and unpack its local runtime.
     echo.
     pause
     exit /b 1
@@ -87,27 +218,81 @@ if exist "%MYSQL_EXE%" (
 echo MySQL was not found.
 echo.
 
-echo Downloading MySQL %MYSQL_VERSION%...
-
 set "MYSQL_ZIP=%RUNTIME_DIR%\mysql.zip"
 
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-    "$ProgressPreference='SilentlyContinue'; Invoke-WebRequest -Uri 'https://dev.mysql.com/get/Downloads/MySQL-8.0/mysql-8.0.37-winx64.zip' -OutFile '%MYSQL_ZIP%'"
+REM ------------------------------------------------------------
+REM Download MySQL
+REM ------------------------------------------------------------
 
+echo Downloading MySQL %MYSQL_VERSION%...
+echo.
+
+where curl.exe >nul 2>&1
 if errorlevel 1 (
     echo.
-    echo ERROR: Failed to download MySQL.
-    echo Check your internet connection.
+    echo ERROR: curl.exe was not found.
+    echo Install Windows 10 or newer, or install curl and add it to PATH.
     echo.
     pause
     exit /b 1
 )
 
-echo MySQL download completed.
-echo Extracting MySQL...
+curl.exe --fail --location --retry 3 --retry-delay 2 --output "%MYSQL_ZIP%" ^
+    "https://cdn.mysql.com/Downloads/MySQL-8.0/mysql-8.0.46-winx64.zip"
+if errorlevel 1 (
+    echo.
+    echo ERROR: MySQL download failed.
+    echo.
+    echo The MySQL download server did not provide the ZIP file.
+    echo.
+    if exist "%MYSQL_ZIP%" del /f /q "%MYSQL_ZIP%" >nul 2>&1
+    pause
+    exit /b 1
+)
+
+REM ------------------------------------------------------------
+REM Verify downloaded file
+REM ------------------------------------------------------------
+
+echo Verifying MySQL download...
+
+if not exist "%MYSQL_ZIP%" (
+    echo.
+    echo ERROR: MySQL ZIP file was not created.
+    echo.
+    pause
+    exit /b 1
+)
 
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-    "Expand-Archive -Path '%MYSQL_ZIP%' -DestinationPath '%RUNTIME_DIR%\mysql_extract' -Force"
+    "try { Add-Type -AssemblyName System.IO.Compression.FileSystem; [System.IO.Compression.ZipFile]::OpenRead('%MYSQL_ZIP%').Dispose(); exit 0 } catch { exit 1 }"
+
+if errorlevel 1 (
+    echo.
+    echo ERROR: Downloaded MySQL file is not a valid ZIP archive.
+    echo.
+    echo The download server may have returned an error page instead.
+    echo.
+    del /f /q "%MYSQL_ZIP%" >nul 2>&1
+    pause
+    exit /b 1
+)
+
+echo MySQL ZIP verified successfully.
+echo.
+
+REM ------------------------------------------------------------
+REM Extract MySQL
+REM ------------------------------------------------------------
+
+echo Extracting MySQL...
+
+if exist "%RUNTIME_DIR%\mysql_extract" (
+    rmdir /s /q "%RUNTIME_DIR%\mysql_extract"
+)
+
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+    "try { Expand-Archive -Path '%MYSQL_ZIP%' -DestinationPath '%RUNTIME_DIR%\mysql_extract' -Force -ErrorAction Stop } catch { exit 1 }"
 
 if errorlevel 1 (
     echo.
@@ -116,6 +301,10 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
+
+REM ------------------------------------------------------------
+REM Move extracted MySQL directory
+REM ------------------------------------------------------------
 
 if exist "%MYSQL_DIR%" (
     rmdir /s /q "%MYSQL_DIR%"
@@ -128,7 +317,32 @@ for /d %%D in ("%RUNTIME_DIR%\mysql_extract\mysql-*") do (
 rmdir /s /q "%RUNTIME_DIR%\mysql_extract"
 del /f /q "%MYSQL_ZIP%" >nul 2>&1
 
+REM ------------------------------------------------------------
+REM Verify MySQL installation
+REM ------------------------------------------------------------
+
+if not exist "%MYSQL_EXE%" (
+    echo.
+    echo ERROR: MySQL installation is incomplete.
+    echo mysqld.exe was not found.
+    echo.
+    pause
+    exit /b 1
+)
+
+if not exist "%MYSQL_CLIENT%" (
+    echo.
+    echo ERROR: MySQL installation is incomplete.
+    echo mysql.exe was not found.
+    echo.
+    pause
+    exit /b 1
+)
+
 :MYSQL_INSTALLED
+
+echo MySQL is available.
+echo.
 
 if not exist "%MYSQL_EXE%" (
     echo.
@@ -482,8 +696,8 @@ REM ============================================================
 echo [8/8] Starting Widgify Desktop Client...
 echo.
 
-start "Widgify - Desktop Client" cmd /k ^
-    "cd /d ""%PROJECT_DIR%"" && call mvnw.cmd exec:java ""-Dexec.mainClass=com.widgify.desktop.WidgifyDesktopClient"" ""-Ddb.url=jdbc:mysql://localhost:3306/widgify?useSSL=false^&allowPublicKeyRetrieval=true^&serverTimezone=UTC"" ""-Ddb.user=root"" ""-Ddb.password="""
+start "Widgify - Desktop Client" /D "%PROJECT_DIR%" cmd /k ^
+    call "%PROJECT_DIR%mvnw.cmd" exec:java "-Dexec.mainClass=com.widgify.desktop.WidgifyDesktopClient" "-Ddb.url=jdbc:mysql://localhost:3306/widgify?useSSL=false" "-Ddb.user=root" "-Ddb.password="
 
 echo.
 echo ============================================================
@@ -508,4 +722,35 @@ echo.
 
 timeout /t 5 /nobreak >nul
 
+exit /b 0
+
+:CHECK_ONLY
+
+echo Checking Widgify launcher prerequisites only...
+
+if not exist "%PROJECT_DIR%database\schema.sql" (
+    echo ERROR: database\schema.sql was not found.
+    exit /b 1
+)
+
+where java >nul 2>&1
+if errorlevel 1 (
+    echo ERROR: Java was not found on PATH.
+    exit /b 1
+)
+
+where powershell >nul 2>&1
+if errorlevel 1 (
+    echo ERROR: Windows PowerShell was not found.
+    exit /b 1
+)
+
+call "%PROJECT_DIR%mvnw.cmd" -version
+if errorlevel 1 (
+    echo ERROR: The portable Maven wrapper could not start.
+    exit /b 1
+)
+
+echo.
+echo Launcher prerequisite check passed.
 exit /b 0

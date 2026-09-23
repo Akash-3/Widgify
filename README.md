@@ -76,6 +76,20 @@ The architecture cleanly separates presentation and persistence while adhering 1
 
 ## 5. Quick Start & Execution Guide
 
+For Windows, the included launcher can download Maven, MySQL, and Tomcat into
+the project-local `.widgify` directory and start the complete application:
+```cmd
+run-widgify.bat
+```
+Run the non-destructive prerequisite check first when setting up another PC:
+```cmd
+run-widgify.bat --check
+```
+The launcher requires Windows PowerShell, `curl.exe` (included with Windows
+10 and newer), and a JDK 17 or newer. Do not move only the batch file; copy the
+complete project folder so the Maven build, database schema, and web
+application are available.
+
 ### Step 1: Initialize MySQL Database
 Execute `database/schema.sql` against your MySQL instance:
 ```bash
