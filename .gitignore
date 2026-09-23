@@ -1,0 +1,59 @@
+# Maven
+target/
+!.mvn/wrapper/maven-wrapper.jar
+
+# Java
+*.class
+
+# IDE
+.idea/
+.vscode/
+*.iml
+.classpath
+.project
+.settings/
+
+# Eclipse / NetBeans
+.nb-gradle/
+build/
+out/
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local configuration
+.env
+*.local
+
+# Temporary files
+tmp/
+temp/
+scratch/
+
+# Generated files
+*.war
+*.jar
+
+# MySQL local data
+data/
+mysql-data/
+
+# Runtime files
+*.pid
+*.lock
+
+# JavaFX / application temporary files
+hs_err_pid*
+replay_pid*
+
+# Personal/local configuration
+local.properties
+
+# Tomcat runtime/temp folders
+tomcat.*/
