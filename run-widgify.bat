@@ -127,7 +127,7 @@ if errorlevel 1 (
     )
 
     curl.exe --fail --location --retry 3 --retry-delay 2 --output "%JDK_ZIP%" ^
-        "https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.20%2B101/OpenJDK17U-jdk_x64_windows_hotspot_17.0.20_101.zip"
+        "https://api.adoptium.net/v3/binary/latest/17/ga/windows/x64/jdk/hotspot/normal/eclipse"
 
     if errorlevel 1 (
         echo.
