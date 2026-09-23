@@ -23,6 +23,8 @@ set "MYSQL_DATA=%MYSQL_DIR%\data"
 set "MYSQL_BIN=%MYSQL_DIR%\bin"
 set "MYSQL_EXE=%MYSQL_BIN%\mysqld.exe"
 set "MYSQL_CLIENT=%MYSQL_BIN%\mysql.exe"
+set "MYSQL_ADMIN=%MYSQL_BIN%\mysqladmin.exe"
+set "MYSQL_ERROR_LOG=%MYSQL_DATA%\widgify-mysql.err"
 
 set "MYSQL_PORT=3306"
 set "MYSQL_DATABASE=widgify"
@@ -397,11 +399,29 @@ REM ============================================================
 
 echo [4/8] Starting MySQL...
 
-netstat -ano | findstr /R /C:":%MYSQL_PORT% .*LISTENING" >nul 2>&1
+REM A listening port alone is not enough: another application may own 3306.
+if exist "%MYSQL_ADMIN%" (
+    "%MYSQL_ADMIN%" --host=127.0.0.1 --port=%MYSQL_PORT% --user=%MYSQL_USER% ping >nul 2>&1
+    if not errorlevel 1 (
+        echo Portable MySQL is already running and responding.
+        goto MYSQL_READY
+    )
+)
 
+netstat -ano | findstr /R /C:":%MYSQL_PORT% .*LISTENING" >nul 2>&1
 if not errorlevel 1 (
-    echo MySQL is already running.
-    goto MYSQL_READY
+    echo.
+    echo ERROR: Port %MYSQL_PORT% is already used by another process.
+    echo Widgify cannot start its MySQL server on this PC.
+    echo.
+    for /f "tokens=5" %%P in ('netstat -ano ^| findstr /R /C:":%MYSQL_PORT% .*LISTENING"') do (
+        echo Port owner PID: %%P
+        tasklist /FI "PID eq %%P" /FO LIST | findstr /I "Image Name PID" 
+    )
+    echo.
+    echo Close the other MySQL/application using port %MYSQL_PORT%, then run Widgify again.
+    pause
+    exit /b 1
 )
 
 echo Starting portable MySQL...
@@ -412,7 +432,8 @@ start "Widgify - MySQL" /min ^
     --basedir="%MYSQL_DIR%" ^
     --datadir="%MYSQL_DATA%" ^
     --port=%MYSQL_PORT% ^
-    --bind-address=127.0.0.1
+    --bind-address=127.0.0.1 ^
+    --log-error="%MYSQL_ERROR_LOG%"
 
 set /a MYSQL_TRIES=0
 
@@ -420,18 +441,23 @@ set /a MYSQL_TRIES=0
 
 timeout /t 2 /nobreak >nul
 
-netstat -ano | findstr /R /C:":%MYSQL_PORT% .*LISTENING" >nul 2>&1
-
-if not errorlevel 1 (
-    goto MYSQL_READY
+if exist "%MYSQL_ADMIN%" (
+    "%MYSQL_ADMIN%" --host=127.0.0.1 --port=%MYSQL_PORT% --user=%MYSQL_USER% ping >nul 2>&1
+    if not errorlevel 1 goto MYSQL_READY
 )
 
 set /a MYSQL_TRIES+=1
 
 if !MYSQL_TRIES! GEQ 30 (
     echo.
-    echo ERROR: MySQL failed to start within 60 seconds.
-    echo Check the MySQL window for errors.
+    echo ERROR: MySQL failed to become ready within 60 seconds.
+    echo.
+    echo MySQL error log: %MYSQL_ERROR_LOG%
+    if exist "%MYSQL_ERROR_LOG%" (
+        echo -------- Last MySQL errors --------
+        powershell -NoProfile -Command "Get-Content -LiteralPath '%MYSQL_ERROR_LOG%' -Tail 25"
+        echo -----------------------------------
+    )
     echo.
     pause
     exit /b 1
@@ -538,10 +564,26 @@ echo Tomcat is available.
 echo.
 
 REM ============================================================
-REM [6/8] BUILD WIDGIFY
+REM [6/9] CLEAN BUILD WIDGIFY
 REM ============================================================
 
-echo [6/8] Building Widgify...
+echo [6/9] Removing stale build output...
+
+if exist "%PROJECT_DIR%target" (
+    rmdir /s /q "%PROJECT_DIR%target"
+)
+
+if exist "%PROJECT_DIR%target" (
+    echo.
+    echo ERROR: Could not remove the old target directory.
+    echo Close any process using the project and try again.
+    pause
+    exit /b 1
+)
+
+echo Old build output removed.
+echo.
+echo Building Widgify from the current source files...
 echo.
 echo Maven Wrapper will automatically download Maven and
 echo all dependencies declared in pom.xml.
@@ -572,10 +614,10 @@ echo Build completed successfully.
 echo.
 
 REM ============================================================
-REM [7/8] DEPLOY AND START TOMCAT
+REM [7/9] DEPLOY AND START TOMCAT
 REM ============================================================
 
-echo [7/8] Deploying Widgify server...
+echo [7/9] Deploying Widgify server...
 
 set "CATALINA_HOME=%TOMCAT_DIR%"
 set "CATALINA_BASE=%TOMCAT_DIR%"
@@ -590,10 +632,25 @@ if not errorlevel 1 (
 
     call "%TOMCAT_DIR%\bin\shutdown.bat" >nul 2>&1
 
-    timeout /t 5 /nobreak >nul
+    set /a STOP_TRIES=0
+
+:TOMCAT_STOP_WAIT
+    timeout /t 1 /nobreak >nul
+    netstat -ano | findstr /R /C:":%TOMCAT_PORT% .*LISTENING" >nul 2>&1
+    if errorlevel 1 goto TOMCAT_STOPPED
+    set /a STOP_TRIES+=1
+    if !STOP_TRIES! GEQ 15 (
+        echo Tomcat did not stop cleanly. Stopping the process on port %TOMCAT_PORT%...
+        for /f "tokens=5" %%P in ('netstat -ano ^| findstr /R /C:":%TOMCAT_PORT% .*LISTENING"') do taskkill /PID %%P /F >nul 2>&1
+        timeout /t 2 /nobreak >nul
+        goto TOMCAT_STOPPED
+    )
+    goto TOMCAT_STOP_WAIT
 )
 
-REM Remove old application
+:TOMCAT_STOPPED
+
+REM Remove old exploded deployment and Tomcat work/temp caches.
 
 if exist "%TOMCAT_APP%" (
     rmdir /s /q "%TOMCAT_APP%"
@@ -601,6 +658,14 @@ if exist "%TOMCAT_APP%" (
 
 if exist "%TOMCAT_WAR%" (
     del /f /q "%TOMCAT_WAR%"
+)
+
+if exist "%TOMCAT_DIR%\work" (
+    rmdir /s /q "%TOMCAT_DIR%\work"
+)
+
+if exist "%TOMCAT_DIR%\temp" (
+    rmdir /s /q "%TOMCAT_DIR%\temp"
 )
 
 REM Deploy new WAR
@@ -672,6 +737,13 @@ if exist "%TOMCAT_APP%\WEB-INF\web.xml" (
     goto DEPLOY_READY
 )
 
+REM Prefer an HTTP readiness check as well; Tomcat can serve the app before
+REM the exploded directory is visible on slower disks or OneDrive folders.
+curl.exe --fail --silent --show-error --max-time 5 "http://127.0.0.1:%TOMCAT_PORT%/widgify/login.jsp" >nul 2>&1
+if not errorlevel 1 (
+    goto DEPLOY_READY
+)
+
 set /a DEPLOY_TRIES+=1
 
 if !DEPLOY_TRIES! GEQ 30 (
@@ -690,10 +762,37 @@ echo Widgify server is ready.
 echo.
 
 REM ============================================================
-REM [8/8] START DESKTOP CLIENT
+REM [8/9] VERIFY LOGIN AGAINST THE FRESH DEPLOYMENT
 REM ============================================================
 
-echo [8/8] Starting Widgify Desktop Client...
+echo [8/9] Running authentication smoke test...
+echo This registers a temporary user, verifies correct login, rejects bad credentials,
+echo and verifies the authenticated session can load widgets.
+echo.
+
+call "%PROJECT_DIR%mvnw.cmd" -q exec:java "-Dexec.mainClass=com.widgify.desktop.net.ServerApiClientTest" "-Dexec.jvmArgs=-ea"
+
+if errorlevel 1 (
+    echo.
+    echo ============================================================
+    echo                 LOGIN SMOKE TEST FAILED
+    echo ============================================================
+    echo.
+    echo The fresh WAR was deployed, but authentication did not pass.
+    echo The desktop client will not be started.
+    echo.
+    pause
+    exit /b 1
+)
+
+echo Authentication smoke test passed.
+echo.
+
+REM ============================================================
+REM [9/9] START DESKTOP CLIENT
+REM ============================================================
+
+echo [9/9] Starting Widgify Desktop Client...
 echo.
 
 start "Widgify - Desktop Client" /D "%PROJECT_DIR%" cmd /k ^
