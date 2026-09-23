@@ -57,3 +57,6 @@ local.properties
 
 # Tomcat runtime/temp folders
 tomcat.*/
+
+# Widgify local runtime
+.widgify/
